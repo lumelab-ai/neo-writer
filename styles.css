@@ -17,7 +17,7 @@
   --page-wf: 1;      /* Format → Page Width: Regular 1, Wide, Wider (app.js) */
   --page-pad-x: 72px; /* the page's side margins at that width */
   --page-w: calc(clamp(680px, 44vw, 760px) * var(--page-wf));
-  /* the room the scrollbar and the page's own shadow need beside it */
+  /* the room the scrollbar needs beside the page */
   --page-gutter: 80px;
   /* how wide everything laid out as the manuscript is: one page, or, in the
      Pages view with two pages side by side, a spread (see "Pages view") */
@@ -668,7 +668,7 @@ body.night {
   --paper: #232221;
   --ink: #d6d2c6;
 }
-body.night .sheet, body.night #aux-paper { box-shadow: 0 4px 30px rgba(0,0,0,0.7); border: 1px solid #2e2d2b; }
+body.night .sheet, body.night #aux-paper { border: 1px solid #2e2d2b; }
 body.night .chapter-head, body.night #aux-paper h2 { color: #918b7d; }
 body.night #tp-subtitle { color: #a09a8c; }
 body.night #tp-author { color: #918b7d; }
@@ -748,7 +748,6 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off):not(.no-c
 .sheet {
   background: var(--paper); color: var(--ink);
   padding: 70px var(--page-pad-x) 90px;
-  box-shadow: 0 4px 30px rgba(0,0,0,0.5);
   min-height: 88vh;
   margin-bottom: 44px;
 }
@@ -757,7 +756,6 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off):not(.no-c
   background: var(--paper); color: var(--ink);
   margin: 40px auto 120px;
   padding: 70px var(--page-pad-x) 90px;
-  box-shadow: 0 4px 30px rgba(0,0,0,0.5);
   min-height: 85vh;
 }
 
@@ -766,8 +764,8 @@ body.focus-mode:not(.no-dropcap) .chapter-body.focus-cap:not(.cap-off):not(.no-c
    with the gap between them a word processor draws. Nothing is added to the
    text: #chapters becomes a stack of columns one page high (column-height,
    column-wrap), the chapters' sheets flow through them, and
-   box-decoration-break: clone gives each piece of a sheet its own paper,
-   margins and shadow. Every chapter starts on a fresh page. app.js sets
+   box-decoration-break: clone gives each piece of a sheet its own paper
+   and margins. Every chapter starts on a fresh page. app.js sets
    --pg-n, the pages a chapter runs to, so that its last page is a whole page
    too; Two Pages Side by Side (body.pages-two, set when two fit the window)
    makes the stack two columns wide. A script has pages of its own. */
@@ -1823,8 +1821,6 @@ body.light .about-version { color: #6a665e; }
 body.light .modal p.about-line { color: #77726a; }
 body.light .up-bar { background: #e4e0d8; }
 
-/* the page's surround */
-body.light .sheet, body.light #aux-paper { box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 28px rgba(0,0,0,0.1); }
 body.light .spell-menu { background: #fff; border-color: #d9d4ca; box-shadow: 0 6px 24px rgba(0,0,0,0.14); }
 body.light .spell-menu button { color: #2b2926; }
 body.light .spell-menu button:hover:not(:disabled), body.light .spell-menu button:focus-visible { background: #f0ede7; }
@@ -1999,11 +1995,9 @@ body.light .book.script-tile { background: #fffefb; box-shadow: 0 0 0 1px rgba(0
 }
 #paper.script #chapters {
   background: var(--paper); color: var(--ink);
-  box-shadow: 0 4px 30px rgba(0,0,0,0.5);
   padding: 6em 5.7em calc((var(--sp-last, 54) + 6) * 1em) 9em;
   margin-bottom: 44px;
 }
-body.night #paper.script #chapters { box-shadow: 0 4px 30px rgba(0,0,0,0.7); }
 #paper.script .chapter.sheet {
   background: none; box-shadow: none; border: none; padding: 0; margin: 0; min-height: 0;
 }
