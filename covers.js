@@ -589,3 +589,6 @@ const NeoCovers = (() => {
 
   return { plan, dress, paintAbstract, paintInto, renderFull, fitImage, forget, hash, ready, TEMPLATES };
 })();
+
+// Node (the tests) can require it; the page reads the global as before
+if (typeof module === 'object' && module.exports) module.exports = NeoCovers;

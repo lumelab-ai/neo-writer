@@ -2,7 +2,7 @@
 // Owns the window and all file-system access. The renderer talks to this
 // through the IPC handlers below (see preload.js for the exposed API).
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, utilityProcess, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, utilityProcess, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -557,6 +557,7 @@ function requestDownload(files) {
 // null when every file is here (the caller goes on at once, as always);
 // otherwise a promise that settles once they've come down, or after `ms`
 // with whatever is still in iCloud
+// eslint-disable-next-line prefer-const -- the tests retune it
 let CLOUD_WAIT = 30000; // (a test shortens it)
 function whenLocal(files, ms = CLOUD_WAIT) {
   let away = cloudOnlyAmong(files);
@@ -1030,6 +1031,134 @@ function readCover(fp, fname) {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Chapter images: a picture in the manuscript keeps its bytes in the book's
+// img/ folder — the original at full resolution (what the exports print)
+// and, beside it, the lighter copy the page shows, which the window makes
+// with its canvas and sends in already encoded. Names follow the covers'
+// pattern; reads go through afterLocal, so a picture still in iCloud never
+// holds the page up.
+// ---------------------------------------------------------------------------
+
+const IMG_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'svg'];
+const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', svg: 'image/svg+xml' };
+function imgNameOk(fname) {
+  const m = /^(img-[a-z0-9-]+)\.(png|jpg|jpeg|webp|svg)$/.exec(String(fname || ''));
+  return m ? { stem: m[1], ext: m[2] } : null;
+}
+
+ipcMain.handle('img:store', (_e, bookId, job = {}) => {
+  const ext = String(job.ext || '').toLowerCase().replace('.', '');
+  if (!IMG_EXTS.includes(ext)) return { error: 'unsupported' };
+  // the bytes first: nothing is written until the picture is in hand
+  let buf = null;
+  if (job.srcPath) {
+    // a file dragged in from the Finder: its bytes are copied as they are
+    buf = afterLocal([job.srcPath], () => {
+      try { return fs.readFileSync(job.srcPath); } catch { return null; }
+    }, () => null);
+    if (!buf) return { error: 'unreadable' };
+  } else {
+    if (!job.original) return { error: 'empty' };
+    buf = Buffer.from(String(job.original), 'base64');
+  }
+  const dir = path.join(bookDir(bookId), 'img');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+  const stem = 'img-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  const fname = stem + '.' + (ext === 'jpeg' ? 'jpg' : ext);
+  writeFileDurable(path.join(dir, fname), buf);
+  let display = null;
+  if (job.display) {
+    display = stem + '-d.webp';
+    writeFileDurable(path.join(dir, display), Buffer.from(String(job.display), 'base64'));
+  }
+  return { file: fname, display };
+});
+
+ipcMain.handle('img:read', (_e, bookId, fname) => {
+  let fp;
+  try {
+    const ok = imgNameOk(fname);
+    if (!ok) return null;
+    fp = path.join(bookDir(bookId), 'img', ok.stem + '.' + ok.ext);
+  } catch { return null; }
+  return afterLocal([fp], () => {
+    try {
+      const buf = fs.readFileSync(fp);
+      return { base64: buf.toString('base64'), mime: IMG_MIME[path.extname(fp).slice(1)] || 'application/octet-stream' };
+    } catch {
+      return null;
+    }
+  }, () => null);
+});
+
+ipcMain.handle('img:pick', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: t('Choose a picture'),
+    properties: ['openFile'],
+    filters: [{ name: t('Images'), extensions: IMG_EXTS }]
+  });
+  if (canceled || !filePaths.length) return null;
+  // the picture's bytes come along, so the page can size its lighter copy
+  // without a second read
+  const fp = filePaths[0];
+  const buf = afterLocal([fp], () => {
+    try { return fs.readFileSync(fp); } catch { return null; }
+  }, () => null);
+  if (!buf) return null;
+  const ext = path.extname(fp).toLowerCase().replace('.', '');
+  return { srcPath: fp, base64: buf.toString('base64'), mime: IMG_MIME[ext === 'jpeg' ? 'jpg' : ext] || 'image/png' };
+});
+
+// A picture nothing refers to any more (inserted and undone) leaves img/
+// at the next open. The say-so of every file that could name a picture is
+// read first — chapters, the book's own pages, darlings, snapshots — and
+// one unreadable file, or one still in iCloud, stops the whole sweep
+// rather than risk a picture a late-arriving sync was bringing. A picture
+// younger than a day is left for the next sweep, for the same reason.
+ipcMain.handle('img:sweep', async (_e, bookId) => {
+  const dir = bookDir(bookId);
+  const imgDir = path.join(dir, 'img');
+  if (!fs.existsSync(imgDir)) return { removed: 0 };
+  const files = [];
+  const gather = (d) => {
+    for (const f of fs.readdirSync(d)) {
+      if (f.startsWith('.') || f.endsWith('.tmp')) continue;
+      const fp = path.join(d, f);
+      const st = fs.statSync(fp);
+      if (st.isDirectory()) gather(fp);
+      else files.push(fp);
+    }
+  };
+  try { gather(dir); } catch { return { aborted: true }; }
+  const pictures = new Set();
+  const named = new Set();
+  for (const fp of files) {
+    if (fp.startsWith(imgDir + path.sep)) {
+      const ok = imgNameOk(path.basename(fp));
+      if (ok) pictures.add(path.basename(fp));
+      continue;
+    }
+    if (isCloudOnly(fp)) return { aborted: true }; // its say-so hasn't arrived
+    let text;
+    try { text = fs.readFileSync(fp, 'utf8'); } catch { return { aborted: true }; }
+    for (const m of String(text).matchAll(/img-[a-z0-9-]+\.(?:png|jpe?g|webp|svg)/g)) named.add(m[0]);
+  }
+  const day = 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const f of pictures) {
+    if (named.has(f)) continue;
+    const fp = path.join(imgDir, f);
+    try {
+      if (Date.now() - fs.statSync(fp).mtimeMs < day) continue; // still crossing a sync
+      fs.unlinkSync(fp);
+      removed += 1;
+    } catch { /* it stays */ }
+  }
+  return { removed };
+});
 
 // ---------------------------------------------------------------------------
 // Painted covers: once a story passes a thousand words, NEO reads it and
@@ -2092,7 +2221,9 @@ ipcMain.handle('log:error', (_e, msg) => logError('renderer', msg));
 // that day or any day after, since the backup ran at launch. Now a stuck
 // file holds up only the backup, which leaves it out and says so, and a
 // backup that overruns altogether is ended.
+// eslint-disable-next-line prefer-const -- the tests retune them
 let BACKUP_LIMIT_MS = 15 * 60 * 1000; // the whole job
+// eslint-disable-next-line prefer-const -- the tests retune them
 let BACKUP_FILE_LIMIT_MS = 20 * 1000; // one file
 function dailyBackup() {
   if (backupRunning) return Promise.resolve(); // one at a time (the hourly look can meet a slow one)
@@ -2845,6 +2976,12 @@ function buildMenu() {
           ...pageKey('CmdOrCtrl+Shift+Enter', () => sendToWindow({ type: 'poetry' })),
           type: 'checkbox',
           checked: poetryState
+        },
+        {
+          more: true,
+          visible: !scriptState.on,
+          label: t('Insert Image…'),
+          click: () => sendToWindow({ type: 'insert-image' })
         },
         { type: 'separator' },
         // *italic* and **bold** as you type or paste; off for writers who

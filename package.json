@@ -17,6 +17,7 @@
     "test:caret": "electron scripts/caret.e2e.js",
     "test:emphasis": "electron scripts/emphasis.e2e.js",
     "test:manuscript": "electron scripts/manuscript.e2e.js",
+    "test:images": "electron scripts/images.e2e.js",
     "test:pages": "electron scripts/pages.e2e.js",
     "test:simple": "electron scripts/simple.e2e.js",
     "test:find": "electron scripts/find.e2e.js",

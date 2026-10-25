@@ -59,19 +59,18 @@ test('Swedish: accents, inflections, compounds, suggestions and dictionary chang
 });
 
 function spellWorker() {
-  let handle, reply;
+  let handle;
   const context = vm.createContext({
     require: localRequire,
     process: { parentPort: {
       on: (_name, callback) => { handle = callback; },
-      postMessage: (message) => { reply = message; }
+      postMessage: () => {}
     } }
   });
   // The string is the file on disk. filename is how Node attributes coverage to it.
   vm.runInContext(source('spell-worker.js'), context, { filename: path.join(root, 'spell-worker.js') });
   let id = 0;
   const waiting = new Map();
-  reply = null;
   // the worker answers asynchronously and in order
   context.process.parentPort.postMessage = (message) => {
     const done = waiting.get(message.id);
