@@ -3058,6 +3058,7 @@ function wireChapterBody(body, chId) {
     }
     if (handlePoetry(e, body, chId)) return;
     if (handleFlush(e, body, chId)) return;
+    if (handleHeading(e)) return;
     if (poetryBackspace(e, body, chId)) return;
     if (sceneBreakDelete(e, body, chId)) return;
     if (spaceSafeDelete(e, body, chId)) return;
@@ -3817,13 +3818,14 @@ function handleEnter(e, body, chId) {
   if (block.classList.contains('scene-break')) { e.preventDefault(); return true; } // Enter on a *** line: nothing
   // Enter in a poetry paragraph steps back into prose: an empty line becomes
   // an ordinary paragraph in place; otherwise the line splits and the new
-  // paragraph is plain (⇧Enter is how the poem continues)
-  if (block.classList.contains('poetry') || block.classList.contains('flush')) {
+  // paragraph is plain (⇧Enter is how the poem continues). A heading's
+  // Enter is the same step back: the line under it is prose.
+  if (block.classList.contains('poetry') || block.classList.contains('flush') || isHeading(block)) {
     e.preventDefault();
     enterRun = 0;
     if (block.textContent.trim() === '') {
       snapshotStructure('poetry paragraph to prose');
-      block.classList.remove('poetry', 'flush');
+      block.classList.remove('poetry', 'flush', 'heading', 'subheading');
       romanize(block);
       placeCaret(block, 0);
       syncChapter(body, chId);
@@ -3835,7 +3837,7 @@ function handleEnter(e, body, chId) {
     document.execCommand('insertParagraph');
     const cur = caretBlock(body);
     if (cur && cur !== block) {
-      cur.classList.remove('poetry', 'flush');
+      cur.classList.remove('poetry', 'flush', 'heading', 'subheading');
       if (wasPoetry) romanize(cur);
       placeCaret(cur, 0);
     }
@@ -4102,6 +4104,63 @@ function handleFlush(e, body, chId) {
   return true;
 }
 
+/* ================================================================== */
+/*  HEADINGS — ⌘⌥1 chapter, ⌘⌥2 section (Ctrl+Alt+1, Ctrl+Alt+2)       */
+/*  A title inside the chapter, on the page's own scale: the chapter's */
+/*  at 1.65× the body, a section's at 1.25× (styles.css). The same key */
+/*  takes it back to prose, and Enter steps out of it to write.        */
+/* ================================================================== */
+
+function isHeading(p) {
+  return !!(p && (p.classList.contains('heading') || p.classList.contains('subheading')));
+}
+
+// ⌘⌥1 / ⌘⌥2: the paragraph at the caret becomes a chapter or a section
+// heading; in one of them, the same key makes it prose again. On a ***
+// line: nothing.
+function handleHeading(e) {
+  if (!e.altKey || e.shiftKey || !(e.metaKey || e.ctrlKey)) return false;
+  const m = /^(?:Digit|Numpad)([12])$/.exec(e.code || '');
+  if (!m) return false;
+  e.preventDefault();
+  const body = document.activeElement && document.activeElement.closest ? document.activeElement.closest('.chapter-body') : null;
+  const block = body ? caretBlock(body) : null;
+  if (!block || block.classList.contains('scene-break')) return true;
+  toggleHeading(m[1] === '1' ? 'heading' : 'subheading');
+  return true;
+}
+
+// Format → Chapter Heading / Section Heading, and the keys above: every
+// paragraph the selection touches, the way the paragraph kinds do
+function toggleHeading(kind) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) { toast(t('Click into a paragraph first')); return; }
+  const r = sel.getRangeAt(0);
+  let el = r.startContainer;
+  if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  const body = el && el.closest ? el.closest('.chapter-body') : null;
+  if (!body) { toast(t('Click into a paragraph first')); return; }
+  const chId = body.closest('.chapter').dataset.id;
+  const ps = [...body.querySelectorAll('p')].filter(
+    (p) => r.intersectsNode(p) && !p.classList.contains('scene-break')
+  );
+  if (!ps.length) return;
+  snapshotStructure(kind === 'heading' ? 'chapter heading' : 'section heading');
+  const on = !ps.every((p) => p.classList.contains(kind));
+  for (const p of ps) {
+    const wasPoetry = p.classList.contains('poetry');
+    p.classList.remove('poetry', 'flush', 'heading', 'subheading');
+    if (on) p.classList.add(kind);
+    if (wasPoetry && !on) romanize(p);
+  }
+  // the caret goes to the paragraph's end: a title is written forward from
+  // where the words already are, and Enter under it goes on writing
+  placeCaret(ps[0], ps[0].childNodes.length);
+  syncChapter(body, chId);
+  resetNativeUndo();
+  breakRun++;
+}
+
 // Backspace at the very start of a poetry or flush paragraph makes it prose
 // again — the second Backspace then merges it upward like any paragraph
 function poetryBackspace(e, body, chId) {
@@ -4109,7 +4168,7 @@ function poetryBackspace(e, body, chId) {
   const sel = window.getSelection();
   if (!sel.rangeCount || !sel.isCollapsed) return false;
   const block = caretBlock(body);
-  if (!block || !(block.classList.contains('poetry') || block.classList.contains('flush'))) return false;
+  if (!block || !(block.classList.contains('poetry') || block.classList.contains('flush') || isHeading(block))) return false;
   const r = sel.getRangeAt(0);
   const head = document.createRange();
   head.selectNodeContents(block);
@@ -4118,7 +4177,7 @@ function poetryBackspace(e, body, chId) {
   e.preventDefault();
   snapshotStructure('poetry paragraph to prose');
   if (block.classList.contains('poetry')) romanize(block);
-  block.classList.remove('poetry', 'flush');
+  block.classList.remove('poetry', 'flush', 'heading', 'subheading');
   placeCaret(block, 0);
   syncChapter(body, chId);
   resetNativeUndo();
@@ -4147,7 +4206,7 @@ function toggleParaKind(kind) {
   const on = !ps.every((p) => p.classList.contains(kind));
   for (const p of ps) {
     const wasPoetry = p.classList.contains('poetry');
-    p.classList.remove('poetry', 'flush');
+    p.classList.remove('poetry', 'flush', 'heading', 'subheading');
     if (on) p.classList.add(kind);
     if (kind === 'poetry' && on) italicize(p);
     else if (wasPoetry) romanize(p);
@@ -4534,11 +4593,11 @@ async function exportImgParts(d) {
 const OPENING_DASH = /^\s*[-‐‑‒–—―]/;
 // A chapter's opening paragraph — the one with the drop cap and no indent —
 // is its first paragraph with words in it, past a blank line or a *** at the
-// top (the exports skip those too). Poetry stands apart. In an empty
-// chapter it's the paragraph waiting for the first word. Marked data-first,
-// for the screen only.
+// top (the exports skip those too). Poetry and headings stand apart. In an
+// empty chapter it's the paragraph waiting for the first word. Marked
+// data-first, for the screen only.
 function openingPara(body) {
-  const ps = [...body.children].filter((p) => p.tagName === 'P' && !p.classList.contains('poetry') && !p.classList.contains('scene-break') && !p.classList.contains('ghost'));
+  const ps = [...body.children].filter((p) => p.tagName === 'P' && !p.classList.contains('poetry') && !p.classList.contains('scene-break') && !p.classList.contains('ghost') && !isHeading(p));
   return ps.find((p) => p.textContent.trim() !== '') || ps[0] || null;
 }
 function markDialogueOpening(body) {
@@ -4567,6 +4626,7 @@ let lastCaretPara = null;
 let capOffBody = null;
 let menuPoetryState = false;
 let menuFlushState = false;
+let menuHeadingState = '';
 document.addEventListener('selectionchange', () => {
   if (!book || currentTab !== 'manuscript') return;
   const sel = window.getSelection();
@@ -4605,6 +4665,14 @@ document.addEventListener('selectionchange', () => {
   if (inFlush !== menuFlushState && window.neo.flushState) {
     menuFlushState = inFlush;
     window.neo.flushState(inFlush);
+  }
+  // a heading reports which kind it is, so the Format menu ticks the one
+  const inHeading = caretP
+    ? (caretP.classList.contains('heading') ? 'heading' : caretP.classList.contains('subheading') ? 'subheading' : '')
+    : '';
+  if (inHeading !== menuHeadingState && window.neo.headingState) {
+    menuHeadingState = inHeading;
+    window.neo.headingState(inHeading);
   }
   const inFirst = caretP && caretP.parentElement &&
     caretP.hasAttribute('data-first');
@@ -4662,28 +4730,40 @@ function cleanPasteHtml(html, dashes) {
     if (ital) { const i = document.createElement('i'); while (sp.firstChild) i.appendChild(sp.firstChild); sp.appendChild(i); }
     // (underline and strikethrough in a style are read by paraRuns)
   });
-  // a break marker at every block edge and every line break
+  // a break marker at every block edge and every line break; a heading's
+  // opening edge carries its own markers, so a pasted title pastes as one
+  // (h1/h2 a chapter's, h3–h6 a section's)
   const BREAK = '\uE000';
+  const HBREAK1 = '\uE001';
+  const HBREAK2 = '\uE002';
   // (a table's cells are paragraphs too: a letter or a sign set in a table
   // keeps its words)
   const blocks = 'p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, section, article, header, footer, tr, td, th, dd, dt, caption';
   holder.querySelectorAll(blocks).forEach((b) => {
-    b.before(document.createTextNode(BREAK));
+    const own = /^H[12]$/.test(b.tagName) ? HBREAK1 : /^H[3-6]$/.test(b.tagName) ? HBREAK2 : null;
+    b.before(document.createTextNode(own || BREAK));
     b.after(document.createTextNode(BREAK));
   });
   holder.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode(BREAK)));
 
   const paras = [[]];
+  const kinds = [''];
   for (const r of paraRuns(holder.innerHTML)) {
     if (r.mark !== undefined || r.fn !== undefined) { paras[paras.length - 1].push(r); continue; }
-    const pieces = r.text.split(BREAK);
-    pieces.forEach((text, i) => {
-      if (i > 0) paras.push([]);
-      if (text) paras[paras.length - 1].push({ text, b: r.b, i: r.i, u: r.u, s: r.s });
-    });
+    // (the capture keeps each break marker with the piece it ends, so the
+    // paragraph a heading marker opens is known)
+    const parts = r.text.split(/([\uE000\uE001\uE002])/);
+    for (let i = 0; i < parts.length; i += 2) {
+      if (parts[i]) paras[paras.length - 1].push({ text: parts[i], b: r.b, i: r.i, u: r.u, s: r.s });
+      const mark = parts[i + 1];
+      if (mark) {
+        paras.push([]);
+        kinds.push(mark === HBREAK1 ? 'heading' : mark === HBREAK2 ? 'subheading' : '');
+      }
+    }
   }
   const filled = paras.map((runs) => runs.some((r) => r.mark === undefined && r.fn === undefined && r.text.trim()));
-  const out = paras.map((runs, n) => {
+  const built = paras.map((runs, n) => {
     // whitespace collapses like HTML's, and each paragraph is trimmed
     runs = runs.map((r) => (r.mark !== undefined || r.fn !== undefined ? r : { ...r, text: r.text.replace(/\s+/g, ' ') }));
     // (one space is kept where the clipboard's words meet the line's own,
@@ -4713,10 +4793,19 @@ function cleanPasteHtml(html, dashes) {
       if (!r.text) return '';
       return runHtml(r);
     }).join('');
-    return inner.replace(/<[^>]+>/g, '').trim() || inner.includes('class="fn"') ? '<p>' + inner + '</p>' : '';
+    return inner.replace(/<[^>]+>/g, '').trim() || inner.includes('class="fn"')
+      ? { kind: kinds[n], html: `<p${kinds[n] ? ` class="${kinds[n]}"` : ''}>${inner}</p>` }
+      : null;
   }).filter(Boolean);
+  // the engine merges the clipboard's last block into the paragraph the
+  // caret sits in, taking its class with it; a heading ending the clipboard
+  // gives that merge an empty paragraph instead, and the title keeps its kind
+  if (built.length > 1 && built[built.length - 1].kind) {
+    built.push({ kind: '', html: '<p><br></p>' });
+  }
+  const out = built.map((b) => b.html);
   // single block pastes inline (no forced new paragraph)
-  if (out.length === 1) return out[0].slice(3, -4);
+  if (out.length === 1) return out[0].replace(/^<p[^>]*>/, '').replace(/<\/p>$/, '');
   return out.join('');
 }
 
@@ -15137,6 +15226,7 @@ function reportViewState() {
     bodyFont: (library.fonts && library.fonts.body) || '',
     dropCap: (library.fonts && library.fonts.dropcap) || 'literary',
     align: currentAlign(),
+    editorFontSize: library.editorFontSize || 17,
   };
   const key = JSON.stringify(payload);
   if (key === viewStateSent) return;
@@ -15789,6 +15879,8 @@ function bookShortcutSections() {
         [K('⌘⇧R', 'Ctrl+Shift+R'), tk('Align paragraph right')],
         [K('⌘⇧J', 'Ctrl+Shift+J'), tk('Justify paragraph')]
       ] : []),
+      [K('⌘⌥1', 'Ctrl+Alt+1'), tk('Chapter heading'), tk('The paragraph becomes a title at 1.65× the text. The same key takes it back.')],
+      [K('⌘⌥2', 'Ctrl+Alt+2'), tk('Section heading'), tk('A title inside the chapter at 1.25× the text. Enter under it goes back to prose.')],
       [K('⌘+', 'Ctrl++'), tk('Larger text')],
       [K('⌘−', 'Ctrl+−'), tk('Smaller text')],
       [K('⌘0', 'Ctrl+0'), tk('Reset text size and page zoom')]
@@ -15936,6 +16028,10 @@ function parasFromHtml(html) {
     const sceneBreak = p.classList.contains('scene-break');
     const poetry = p.classList.contains('poetry');
     const flush = !poetry && p.classList.contains('flush');
+    // a heading rides along as its class, the way poetry does, so every
+    // export can set it on the page's own scale
+    const heading = !poetry && !flush && p.classList.contains('heading');
+    const subheading = !poetry && !flush && !heading && p.classList.contains('subheading');
     const align = (p.style && p.style.textAlign) || '';
     const runs = paraRuns(p.innerHTML, true).filter((r) => r.text || r.fn !== undefined);
     // a picture travels by name; the exports read its bytes back (the
@@ -15944,15 +16040,18 @@ function parasFromHtml(html) {
       `<img data-img="${escAttr(im.dataset.img || '')}"${im.dataset.d ? ` data-d="${escAttr(im.dataset.d)}"` : ''}>`).join('');
     const inner = runs.map((r) => runHtml(r)).join('') + imgs;
     p.querySelectorAll('.fn').forEach((f) => f.remove());
+    const kindClass = heading ? 'heading' : subheading ? 'subheading' : poetry ? 'poetry' : flush ? 'flush' : '';
     return {
       sceneBreak,
       poetry,
       flush,
+      heading,
+      subheading,
       text: (healStrayNbsp(p), p.innerText).trim(),
       runs,
       align,
       hasImg: !!imgs,
-      html: `<p${poetry ? ' class="poetry"' : flush ? ' class="flush"' : ''}${align ? ` style="text-align:${align}"` : ''}>${inner}</p>`
+      html: `<p${kindClass ? ` class="${kindClass}"` : ''}${align ? ` style="text-align:${align}"` : ''}>${inner}</p>`
     };
   }).filter((p) => p.sceneBreak || p.text || p.hasImg);
 }
@@ -16293,6 +16392,12 @@ function buildPrintHtml(d, o) {
       if (p.sceneBreak) { afterBreak = true; return '<p class="brk">*&#8195;*&#8195;*</p>'; }
       const inner = atFoot(p.html.replace(/^<p[^>]*>|<\/p>$/g, ''), p);
       if (p.poetry) { afterBreak = false; return `<p class="poetry"${p.align ? ` style="text-align:${p.align}"` : ''}>${inner}</p>`; }
+      // a heading stands on the page's own scale; the paragraph under it,
+      // like the one after a break, opens without an indent
+      if (p.heading || p.subheading) {
+        afterBreak = true;
+        return `<p class="${p.heading ? 'heading' : 'subheading'}">${inner}</p>`;
+      }
       const cls = ['hy'];
       if (first) cls.push('first');
       if (first && OPENING_DASH.test(p.text)) cls.push('dialogue');
@@ -16304,7 +16409,7 @@ function buildPrintHtml(d, o) {
   };
   const lines = (paras) => paras.map((p) => {
     if (p.sceneBreak) return '<p class="brk">*&#8195;*&#8195;*</p>';
-    const cls = [isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : ''].filter(Boolean).join(' ');
+    const cls = [isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : '', p.heading ? 'heading' : '', p.subheading ? 'subheading' : ''].filter(Boolean).join(' ');
     return `<p${cls ? ` class="${cls}"` : ''}>${atFoot(p.html.replace(/^<p[^>]*>|<\/p>$/g, ''), p)}</p>`;
   }).join('\n');
 
@@ -16465,6 +16570,8 @@ ${cap ? `p.first:not(.dialogue)::first-letter { initial-letter: 2; -webkit-initi
 p.brk { text-align: center; margin: 0.7em 0; break-after: avoid; letter-spacing: 0.1em; }
 p.poetry { margin: 0.5em 1.5em; text-align: left; }
 p.poetry + p.poetry { margin-top: 0; }
+p.heading { text-align: center; font-size: ${(sz * 1.65).toFixed(1)}pt; line-height: 1.25; margin: 1.1em 0 0.75em; break-after: avoid; }
+p.subheading { font-size: ${(sz * 1.25).toFixed(1)}pt; line-height: 1.35; margin: 1em 0 0.4em; break-after: avoid; }
 .backpage p.hy { text-indent: 0; margin-bottom: 0.7em; }
 img[data-img] { max-width: 100%; height: auto; display: block; margin: 0.4em auto; }
 .also p { text-align: center; font-style: italic; margin: 0 0 0.45em; }
@@ -16772,6 +16879,9 @@ function buildHtml(data, opts = {}) {
     return paras.map((p) => {
       if (p.sceneBreak) { afterBreak = initial; return '<p class="brk">***</p>'; }
       if (p.poetry) { afterBreak = false; return p.html; }
+      // a heading carries its class from parasFromHtml and never takes the
+      // drop cap; the first prose under it does
+      if (p.heading || p.subheading) return p.html;
       let html = p.html;
       if (first || afterBreak) {
         const h = document.createElement('div');
@@ -16790,7 +16900,7 @@ function buildHtml(data, opts = {}) {
   // a page's lines, each set on its own
   const lines = (paras, attrs = true) => paras.map((p) => {
     if (p.sceneBreak) return '<p class="brk">***</p>';
-    const cls = [attrs && isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : ''].filter(Boolean).join(' ');
+    const cls = [attrs && isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : '', p.heading ? 'heading' : '', p.subheading ? 'subheading' : ''].filter(Boolean).join(' ');
     return `<p${cls ? ` class="${cls}"` : ''}${p.align ? ` style="text-align:${p.align}"` : ''}>${p.html.replace(/^<p[^>]*>|<\/p>$/g, '')}</p>`;
   }).join('\n');
   // In the PDF, page 1 is the story's first page (a prologue or chapter 1):
@@ -16881,7 +16991,9 @@ function buildHtml(data, opts = {}) {
   .chapter p { text-indent: 2em; margin: 0; text-align: justify; hyphens: auto; -webkit-hyphens: auto; widows: 2; orphans: 2; }
   img[data-img] { max-width: 100%; height: auto; display: block; margin: 0.4em auto; }
   .chapter p.poetry { text-align: left; hyphens: manual; -webkit-hyphens: manual; }
-  .chapter .hd + p, .chapter .byline + p, .chapter .brk + p, .brk + p, .chapter p.first { text-indent: 0; }
+  .chapter .hd + p, .chapter .byline + p, .chapter .brk + p, .brk + p, .chapter p.first, .chapter p.heading + p, .chapter p.subheading + p { text-indent: 0; }
+  .chapter p.heading { text-align: center; text-indent: 0 !important; font-size: 21.5pt; line-height: 1.25; margin: 1.6em 0 1.1em; break-after: avoid; }
+  .chapter p.subheading { text-indent: 0 !important; font-size: 16.25pt; line-height: 1.35; margin: 1.4em 0 0.5em; break-after: avoid; }
   .chapter p.dialogue { text-indent: 2em; }
   /* the drop cap the page sets, two lines deep in its own face. An initial
      letter, not a float: it stays inside its word, so the PDF's copy,
@@ -17371,6 +17483,11 @@ function docxEntriesOf(data) {
     for (const p of ch.paras) {
       if (p.sceneBreak) body.push(docxP([{ text: '***' }], { style: 'SceneBreak' }));
       else if (p.poetry) body.push(docxP(paraRuns(p.html), { style: 'Poetry', align: p.align === 'center' || p.align === 'right' ? p.align : '', imgs: p.imgParts }));
+      // a heading in the chapter, not the chapter's own heading: bigger on
+      // the page's scale (Word's half-points; the body is 24), kept with
+      // the paragraph under it
+      else if (p.heading) body.push(docxP(paraRuns(p.html), { align: 'center', size: 40, keepNext: true, spaceBefore: 240, spaceAfter: 120, imgs: p.imgParts }));
+      else if (p.subheading) body.push(docxP(paraRuns(p.html), { size: 30, keepNext: true, spaceBefore: 200, imgs: p.imgParts }));
       else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { style: 'BodyTextNoIndent', align: p.align, imgs: p.imgParts }));
       else body.push(docxP(paraRuns(p.html), { style: p.flush ? 'BodyTextNoIndent' : 'BodyText', imgs: p.imgParts }));
     }
@@ -18283,6 +18400,7 @@ async function setEditorFontSize(value) {
   if (value === 0) rememberZoom(pageZoomKey(), 1); // ⌘0 resets this mode's pinch zoom too
   await writeLibrary(library);
   keepReadingPlace(applyFonts);
+  reportViewState(); // the Format menu's Text Size tick
 }
 
 window.neo.onMenu(async (msg) => {
@@ -18347,6 +18465,9 @@ window.neo.onMenu(async (msg) => {
   }
   if (msg.type === 'poetry' && !(book && isScript())) togglePoetry();
   if (msg.type === 'flush' && !(book && isScript())) toggleFlush();
+  if (msg.type === 'heading' && !(book && isScript())) {
+    toggleHeading(msg.value === 'subheading' ? 'subheading' : 'heading');
+  }
   if (msg.type === 'uiLanguage') {
     // save every open page, then reload the window in the new language
     flushAllSaves();
@@ -18375,6 +18496,16 @@ window.neo.onMenu(async (msg) => {
   }
   if (msg.type === 'fontSize') {
     await setEditorFontSize(msg.value);
+  }
+  // Format → Text Size: the size itself, not a step towards it
+  if (msg.type === 'fontSizeSet') {
+    const size = Math.min(EDITOR_SIZE_MAX, Math.max(EDITOR_SIZE_MIN, Math.round(Number(msg.value) || 17)));
+    if (size !== (library.editorFontSize || 17)) {
+      library.editorFontSize = size;
+      await writeLibrary(library);
+      keepReadingPlace(applyFonts);
+      reportViewState();
+    }
   }
   if (msg.type === 'bodyFontPick') {
     const name = await pickLocalFont();

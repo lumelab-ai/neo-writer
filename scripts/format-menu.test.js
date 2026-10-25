@@ -21,7 +21,7 @@ const source = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 
 // (with Show More Features on: Poetry Paragraph is one of its items)
 // view: the page's view state (body font, drop cap, alignment...) as the window reports it
-function menuOn(platform, { script = false, more = true, view = null } = {}) {
+function menuOn(platform, { script = false, more = true, view = null, heading = undefined } = {}) {
   // the library and the app's settings both stand in a throwaway folder
   const library = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-format-menu-'));
   const listeners = new Map();
@@ -53,6 +53,7 @@ function menuOn(platform, { script = false, more = true, view = null } = {}) {
   try {
     listeners.get('more:state')(null, more);
     if (view) listeners.get('view:state')({ sender: null }, view);
+    if (heading !== undefined) listeners.get('heading:state')(null, heading);
     if (script) listeners.get('script:state')(null, { on: true, book: true, element: 'action' });
     else vm.runInContext('buildMenu()', context);
   } finally {
@@ -157,6 +158,66 @@ function shownTicks(items) {
   return groups.flatMap((g) => g.some((i) => i.checked) ? g.filter((i) => i.checked) : [g[0]]).map((i) => i.label);
 }
 const view = (st) => ({ focus: 'off', pageTheme: 'night', uiBright: false, bodyFont: 'Georgia', dropCap: 'literary', align: 'left', ...st });
+
+describe('Format menu: chapter and section headings, and Text Size', () => {
+  const mouse = { triggeredByAccelerator: false };
+  const cmd = (platform) => platform === 'darwin' ? { metaKey: true } : { ctrlKey: true };
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    test(`the headings carry ⌘⌥1 and ⌘⌥2, shown not registered (${platform})`, () => {
+      const items = format(menuOn(platform));
+      const chapter = item(items, 'Chapter Heading');
+      const section = item(items, 'Section Heading');
+      assert.ok(chapter && section, 'both are there');
+      assert.equal(chapter.accelerator, 'CmdOrCtrl+Alt+1');
+      assert.equal(section.accelerator, 'CmdOrCtrl+Alt+2');
+      // the editor answers the keys itself (the way the paragraph kinds do)
+      assert.equal(chapter.registerAccelerator, false);
+      assert.equal(section.registerAccelerator, false);
+      assert.equal(chapter.checked, false, 'prose at the caret: no tick');
+      // a script's ⌘1–⌘7 are the script's own
+      const scriptItems = format(menuOn(platform, { script: true }));
+      assert.equal(item(scriptItems, 'Chapter Heading').visible, false);
+      assert.equal(item(scriptItems, 'Section Heading').visible, false);
+    });
+
+    test(`the caret's heading ticks the one it is (${platform})`, () => {
+      const chapter = item(format(menuOn(platform, { heading: 'heading' })), 'Chapter Heading');
+      const section = item(format(menuOn(platform, { heading: 'subheading' })), 'Section Heading');
+      assert.equal(chapter.checked, true);
+      assert.equal(item(format(menuOn(platform, { heading: 'heading' })), 'Section Heading').checked, false);
+      assert.equal(section.checked, true);
+      assert.equal(item(format(menuOn(platform, { heading: 'subheading' })), 'Chapter Heading').checked, false);
+    });
+
+    test(`a click runs the item; the item's own keys are the page's (${platform})`, () => {
+      const template = menuOn(platform);
+      const chapter = item(format(template), 'Chapter Heading');
+      chapter.click(chapter, null, mouse);
+      assert.deepEqual(template.sent, ['heading']);
+      chapter.click(chapter, null, { triggeredByAccelerator: true, ...cmd(platform) });
+      assert.deepEqual(template.sent, ['heading'], 'the page already answered ⌘⌥1');
+    });
+
+    test(`Text Size offers every size 8–22 and ticks the one in use (${platform})`, () => {
+      const size = item(format(menuOn(platform)), 'Text Size');
+      assert.ok(size, 'the submenu is there');
+      // Array.from: the template's arrays live in main.js's vm realm
+      assert.deepEqual(Array.from(size.submenu, (i) => i.label), Array.from({ length: 15 }, (_, i) => String(8 + i)));
+      assert.deepEqual(shownTicks(size.submenu), ['17'], 'the default is 17');
+      const twelve = item(format(menuOn(platform, { view: view({ editorFontSize: 12 }) })), 'Text Size');
+      assert.deepEqual(shownTicks(twelve.submenu), ['12']);
+      assert.equal(size.visible !== false, true, 'a book shows it');
+      assert.equal(item(format(menuOn(platform, { script: true })), 'Text Size').visible, false, 'a script hides it');
+    });
+
+    test(`picking a size sends it to the window (${platform})`, () => {
+      const template = menuOn(platform);
+      const twenty = item(item(format(template), 'Text Size').submenu, '20');
+      twenty.click(twenty, null, mouse);
+      assert.deepEqual(template.sent, ['fontSizeSet']);
+    });
+  }
+});
 
 describe('Format menu: Drop Cap Style ticks one choice (#422)', () => {
   const choices = { literary: 'Literary', fantasy: 'Fantasy', scifi: 'Sci-Fi', none: 'Off' };
