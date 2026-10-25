@@ -2533,6 +2533,9 @@ function sendToWindow(msg) {
 // whether typewriter scrolling is on
 let poetryState = false;
 let flushState = false;
+// the paragraph kind at the caret: '' prose, 'heading' a chapter title,
+// 'subheading' a section title (Format → Chapter/Section Heading)
+let headingState = '';
 // A script open in the window: the Format menu offers its elements (the
 // keys are the editor's own, ⌘1–⌘7), and Export its two ways out
 let scriptState = { on: false, element: null, underline: false, contd: true };
@@ -2566,6 +2569,12 @@ ipcMain.on('flush:state', (_e, on) => {
   on = !!on;
   if (on === flushState) return;
   flushState = on;
+  try { buildMenu(); } catch (err) { logError('menu', err); }
+});
+ipcMain.on('heading:state', (_e, v) => {
+  v = v === 'heading' || v === 'subheading' ? v : '';
+  if (v === headingState) return;
+  headingState = v;
   try { buildMenu(); } catch (err) { logError('menu', err); }
 });
 ipcMain.on('typewriter:state', (_e, on) => {
@@ -2618,17 +2627,19 @@ ipcMain.on('uizoom:state', (_e, z) => {
 });
 // View and Format menu ticks: the focus level, the page, Brighter Interface, and the writing
 // format the page is using (body font, drop cap style, paragraph alignment).
-let viewState = { focus: 'off', pageTheme: 'night', uiBright: false, bodyFont: '', dropCap: 'literary', align: null };
+let viewState = { focus: 'off', pageTheme: 'night', uiBright: false, bodyFont: '', dropCap: 'literary', align: null, editorFontSize: 17 };
 let keptTheme = null;
 ipcMain.on('view:state', (e, st) => {
   st = st || {};
+  const size = Number(st.editorFontSize);
   const next = {
     focus: st.focus || 'off',
     pageTheme: st.pageTheme || 'night',
     uiBright: !!st.uiBright,
     bodyFont: typeof st.bodyFont === 'string' ? st.bodyFont : '',
     dropCap: typeof st.dropCap === 'string' ? st.dropCap : 'literary',
-    align: ['left', 'center', 'right', 'justify'].includes(st.align) ? st.align : null
+    align: ['left', 'center', 'right', 'justify'].includes(st.align) ? st.align : null,
+    editorFontSize: Number.isFinite(size) && size >= 8 && size <= 22 ? Math.round(size) : 17
   };
   // this computer's page, for the window's color at the next start
   if (next.pageTheme !== keptTheme) {
@@ -2895,9 +2906,21 @@ function buildMenu() {
           ]
         },
         { type: 'separator' },
-        { label: t('Larger Text'), accelerator: 'CmdOrCtrl-Plus', click: () => sendToWindow({ type: 'fontSize', value: 1 }) },
+        { label: t('Larger Text'), accelerator: 'CmdOrCtrl+Plus', click: () => sendToWindow({ type: 'fontSize', value: 1 }) },
         { label: t('Smaller Text'), accelerator: 'CmdOrCtrl-Minus', click: () => sendToWindow({ type: 'fontSize', value: -1 }) },
         { label: t('Reset Text Size'), accelerator: 'CmdOrCtrl+0', click: () => sendToWindow({ type: 'fontSize', value: 0 }) },
+        {
+          // the size itself, not a step towards it (⌘+ and ⌘− step);
+          // a script's page is set by its own zoom
+          visible: !scriptState.on,
+          label: t('Text Size'),
+          submenu: Array.from({ length: 22 - 8 + 1 }, (_, i) => 8 + i).map((n) => ({
+            label: String(n),
+            type: 'radio',
+            checked: viewState.editorFontSize === n,
+            click: () => sendToWindow({ type: 'fontSizeSet', value: n })
+          }))
+        },
         { type: 'separator', visible: !scriptState.on },
         {
           more: true,
@@ -2976,6 +2999,23 @@ function buildMenu() {
           ...pageKey('CmdOrCtrl+Shift+Enter', () => sendToWindow({ type: 'poetry' })),
           type: 'checkbox',
           checked: poetryState
+        },
+        // a title inside the chapter: the chapter's at 1.65× the text, a
+        // section's at 1.25×. The keys are the editor's own (pageKey), as
+        // the paragraph kinds' are
+        {
+          visible: !scriptState.on,
+          label: t('Chapter Heading'),
+          ...pageKey('CmdOrCtrl+Alt+1', () => sendToWindow({ type: 'heading', value: 'heading' })),
+          type: 'checkbox',
+          checked: headingState === 'heading'
+        },
+        {
+          visible: !scriptState.on,
+          label: t('Section Heading'),
+          ...pageKey('CmdOrCtrl+Alt+2', () => sendToWindow({ type: 'heading', value: 'subheading' })),
+          type: 'checkbox',
+          checked: headingState === 'subheading'
         },
         {
           more: true,
