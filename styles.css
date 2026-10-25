@@ -936,6 +936,19 @@ body.bright .spell-menu button { color: #eee; }
   background: #f6e3b8; border-bottom: 2px solid var(--red);
   padding: 0 3px; border-radius: 2px; cursor: pointer;
 }
+/* Pictures (a picture is its own paragraph; the data URL that shows it is
+   the page's, never the file's — captureBody takes it back out) */
+.chapter-body p.image { text-align: center; text-indent: 0; }
+.chapter-body img[data-img] { max-width: 100%; height: auto; }
+/* the picture's bytes are still being read in from the book's img/ folder */
+.chapter-body img[data-img]:not([src]) {
+  display: inline-block; min-width: 96px; min-height: 64px;
+  background: #efece4; border-radius: 3px;
+}
+.chapter-body img.img-missing {
+  min-width: 96px; min-height: 64px; background: #efece4;
+  border: 1px dashed #c9c3b4; border-radius: 3px;
+}
 
 /* --- The pages a book carries, in the manuscript, set as they'll print --- */
 .chapter.bookpage { display: flex; flex-direction: column; }

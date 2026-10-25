@@ -413,6 +413,38 @@
     setCover: async () => null,
     removeCover: async () => true,
 
+    /* ---------- chapter pictures: the book's img/ folder, as on the Mac ---------- */
+    // no srcPath to copy from here: the bytes arrive as base64, and the
+    // page's lighter copy is written beside the original the same way
+    imgStore: async (bookId, job = {}) => {
+      try {
+        await ready;
+        await ensureDir(p(bookId, 'img'));
+        const stem = 'img-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+        const ext = job.ext === 'jpeg' ? 'jpg' : job.ext;
+        const fname = stem + '.' + ext;
+        await FS().writeFile({ ...at(p(bookId, 'img', fname)), data: job.original, encoding: 'base64', recursive: true });
+        let display = null;
+        if (job.display) {
+          display = stem + '-d.webp';
+          await FS().writeFile({ ...at(p(bookId, 'img', display)), data: job.display, encoding: 'base64', recursive: true });
+        }
+        return { file: fname, display };
+      } catch { return { error: 'failed' }; }
+    },
+    imgRead: async (bookId, fname) => {
+      try {
+        await ready;
+        await fetchCloud(p(bookId, 'img', fname));
+        const r = await FS().readFile(at(p(bookId, 'img', fname)));
+        const ext = fname.split('.').pop().toLowerCase();
+        const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'svg' ? 'image/svg+xml' : 'image/jpeg';
+        return { base64: r.data, mime };
+      } catch { return null; }
+    },
+    imgPick: async () => null,
+    imgSweep: async () => ({ removed: 0 }),
+
     /* ---------- desktop powers, politely absent ---------- */
     // Export: the page builds the file (txt/md/html as text, docx/epub as
     // zip entries); it is written to the app's cache and handed to the

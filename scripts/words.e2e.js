@@ -22,6 +22,10 @@ for (const name of fs.readdirSync(os.tmpdir())) {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `neo-words-test-${process.pid}-`));
 app.setPath('userData', path.join(tmp, 'app'));
 app.setPath('documents', tmp);
+// the counts the test reads are words on the screen: English whatever
+// language the computer running the test happens to speak
+fs.mkdirSync(path.join(tmp, 'app'), { recursive: true });
+fs.writeFileSync(path.join(tmp, 'app', 'settings.json'), JSON.stringify({ uiLanguage: 'en' }));
 fs.mkdirSync(path.join(tmp, 'NEO Library'));
 fs.writeFileSync(path.join(tmp, 'NEO Library', 'library.json'), JSON.stringify({
   authorName: '', penNames: [], firstRunDone: true, moreFeatures: true, pageTheme: 'night',
@@ -36,7 +40,7 @@ require('../main.js');
 
 let wc;
 const js = (code) => wc.executeJavaScript(code, true);
-const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+const tick = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 const text = (id) => js(`document.getElementById(${JSON.stringify(id)}).textContent`);
 
 // typed as keys: '\n' is Enter

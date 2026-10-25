@@ -37,21 +37,6 @@ let wc;
 const js = (code) => wc.executeJavaScript(code, true);
 const tick = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 const bookDir = () => path.join(lib, fs.readdirSync(lib).find((n) => n.startsWith('book-')));
-const onDisk = (name) => { try { return fs.readFileSync(path.join(bookDir(), name), 'utf8'); } catch { return null; } };
-const ch = (i) => js(`book.chapterOrder.filter((c) => isStory(c))[${i}]`);
-const caretIn = (i) => js(`(() => {
-  const id = book.chapterOrder.filter((c) => isStory(c))[${i}];
-  const p = document.querySelector('.chapter[data-id="' + id + '"] .chapter-body p');
-  const r = document.createRange();
-  r.setStart(p.firstChild, 3);
-  r.collapse(true);
-  getSelection().removeAllRanges();
-  getSelection().addRange(r);
-  currentChapterId = id;
-})()`);
-const clickTab = async (name) => { await js(`document.querySelector('.tab[data-tab="${name}"]').click()`); await tick(300); };
-const type = async (text) => { wc.insertText(text); await tick(100); };
-const save = async () => { await js('flushAux()'); await tick(300); };
 
 
 const MOD = process.platform === 'darwin' ? 'meta' : 'control';

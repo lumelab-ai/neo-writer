@@ -4,6 +4,24 @@ NEO is a local word processor for books. It is an Electron app made of plain Jav
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before adding a feature. The product is opinionated on purpose. A change that helps someone finish a book belongs here. A change that adds a panel, a prompt, or a dependency usually does not.
 
+## This fork: scope lock
+
+This is a feature fork. Work happens on the branch `imagens` (base: `main`, v1.6.1). The fork's rules sit above everything else in this file:
+
+- **Nothing outside the images feature may change.** No refactors, no drive-by fixes in neighbouring code, no reformatting, renaming, or rewriting lines that do not need to move. Every edit is an addition or the minimum change the feature requires.
+- **No commit, push, pull, merge, or rebase in any branch or repo unless explicitly asked.** When work finishes with uncommitted changes, report the state; do not commit.
+- The feature's agreed design is fixed. Do not reopen it:
+
+  - Formats: PNG, JPG/JPEG, WebP, SVG. Entry points: pasting from the clipboard (screenshots, "Copy Image" from a browser) and dragging a file in from the Finder / File Explorer onto the page.
+  - Storage: an `img/` folder in the book folder, two copies per image — the original at full resolution, byte for byte (`img-<ts>-<rand>.<ext>`), and a display derivative `-d.webp` (width capped at about twice the page, WebP q≈0.85) that is the only one the editor loads. SVG gets no derivative.
+  - Reference in chapter HTML: `<p class="image"><img data-img="…" data-d="…"></p>`. The `src` (a data URL) lives only in the live DOM; `captureBody` strips it, so a chapter file never carries base64. On load, an `img[data-img]` without `src` is resolved through IPC, with a placeholder while it reads.
+  - An image is a block-level paragraph, never inline inside a line of text. SVG is only ever an `<img>` with a data URL (inert as an image), never inline `<svg>`.
+  - Exports: the KDP paperback and the PDF/HTML exports resolve the original (full resolution) for Paged.js; the Word export embeds each picture (`<w:drawing>`, media in the zip, an SVG rasterised to PNG) and the EPUB carries it as a manifest file (an SVG stays an SVG; EPUB 3 reads one natively); the standard manuscript format (`manuscript.js`) stays text-only.
+  - On the page, a picture's bytes are read in only as it nears the viewport (an IntersectionObserver in `resolveBodyImages`); pictures nothing names any more leave `img/` at the next open (`img:sweep`, which reads every file that could name one, stops on any unreadable or iCloud-placeholder file, and spares files younger than a day for a sync still crossing). Format → Insert Image… (behind Show More) picks a file with `img:pick`; Pocket's bridge implements `imgRead`/`imgStore` against the phone's library (its `imgPick` and `imgSweep` are polite stubs).
+
+- Where the feature touches, as a map: the `paste` handler and `insertClip` (around `app.js:2902`), the body `drop` handler (around `app.js:2911`), `cleanPasteHtml` (`app.js:4327`, today removes `img`), `captureBody` (`app.js:4185`), the chapter load in `renderChapters` (`app.js:2681`), `parasFromHtml` (`app.js:15602`, today drops a paragraph with no text), `buildPrintHtml` (`app.js:15942`), and `cover:pick`/`cover:set`/`cover:read` in `main.js` (~978–1032) as the binary-image pattern to follow.
+- Tests: `scripts/images.test.js` (save/load round-trip keeps `src` off disk, `parasFromHtml` keeps an image paragraph, `img:read` name validation, accepted extensions including `.svg`, the orphan sweep) and `scripts/images.e2e.js` (`npm run test:images`: paste, Finder drop, Insert Image…, the chapter file on disk, reopening, the export data, Word and EPUB exports). `npm run lint` passes with zero errors, and `npm test` plus every `npm run test:*` suite is green — an e2e that reads words off the screen seeds `settings.json` with `uiLanguage: 'en'` so it doesn't depend on the runner's OS language.
+
 ## Rules that override convenience
 
 - Nothing interrupts a writer mid-sentence. No popups, no squiggles, no notifications while typing. Spellcheck is off until the writer asks for a pass.

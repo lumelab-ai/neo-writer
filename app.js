@@ -199,13 +199,13 @@ let chapterHTML = {};        // chapterId -> html (loaded at open)
 let savedHTML = {};          // chapterId -> html as last read from / written to disk
 let savedMetaSig = '';       // book.json as last read/written, minus the volatile bits
 let diskStamps = {};         // chapterId -> file mtime as of the last look at the disk
-let writing = {};            // chapterId -> chapter writes still on their way to disk
+const writing = {};          // chapterId -> chapter writes still on their way to disk
 let stickies = [];           // [{id, chapterId, text, resolved}]
 let darlings = [];           // [{id, html, text, chapterId, chapterLabel, date}]
 let currentTab = 'manuscript';
 let currentChapterId = null; // chapter the caret/scroll is in
 let wordMode = 'book';       // 'book' | 'chapter'
-let saveTimers = {};
+const saveTimers = {};
 
 // Every library.json write from this window goes through here. A look at the
 // disk (refreshFromDisk) can then tell its own writes from another device's:
@@ -762,7 +762,7 @@ async function loadLibrary() {
 function showFirstRun() {
   const fr = $('#firstrun');
   fr.hidden = false;
-  let picked = { body: Object.keys(BODY_FONTS)[0] || 'Georgia', dropcap: 'literary' };
+  const picked = { body: Object.keys(BODY_FONTS)[0] || 'Georgia', dropcap: 'literary' };
 
   // Step 1: who are you, and how do you write?
   $$('.fr-choice').forEach((btn) => {
@@ -2301,15 +2301,17 @@ $('#add-shelf-btn').onclick = async () => {
   if (last) {
     last.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
     const label = last.querySelector('.shelf-label');
-    if (label) setTimeout(() => {
-      if (NO_HOVER) { label.click(); return; }
-      label.focus();
-      const r = document.createRange();
-      r.selectNodeContents(label); // selected: typing replaces "New Shelf"
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(r);
-    }, 350);
+    if (label) {
+      setTimeout(() => {
+        if (NO_HOVER) { label.click(); return; }
+        label.focus();
+        const r = document.createRange();
+        r.selectNodeContents(label); // selected: typing replaces "New Shelf"
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }, 350);
+    }
   }
 };
 
@@ -2503,7 +2505,9 @@ let openGeneration = 0;
 async function openBook(bookId) {
   // a book being exported from the shelf finishes first (it borrows the
   // open book's place for the moment it takes)
-  while (shelfExport) await new Promise((r) => setTimeout(r, 50));
+  for (let busy = shelfExport; busy; busy = shelfExport) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   // Everything is read first and only then becomes the open book, so a
   // second book opened while this one loads (a double click, a slow cloud
   // read) never ends up with a mix of the two.
@@ -2589,6 +2593,9 @@ async function openBook(bookId) {
     setTimeout(() => toast(t('Enter twice = section break · three times = new chapter · {key} shows everything else', { key: KHELP }), 7000), 800);
   }
   spReportState();
+  // pictures nothing refers to any more leave the book's img/ folder (its
+  // say-so is read from every file that could name one; see img:sweep)
+  if (window.neo.imgSweep) window.neo.imgSweep(bookId).catch(() => {});
 }
 
 // the pages that show a faint word until they have their own
@@ -2679,6 +2686,7 @@ function renderChapters() {
     // a script's lines are set as they print (styles.css, SCREENPLAYS)
     if (isScript()) body.classList.add('script-body', $('#paper').classList.contains('narrow') ? 'sp-narrow' : 'sp-geom', 'no-cap');
     body.innerHTML = chapterHTML[chId] || '<p><br></p>';
+    resolveBodyImages(body); // the pictures the chapter names, read in for the page
     markDialogueOpening(body);
     if (PAGE_PROMPTS[kind]) {
       body.dataset.ph = PAGE_PROMPTS[kind]();
@@ -2731,7 +2739,6 @@ async function deleteChapterToDarlings(chId, quiet = false) {
   if (!quiet) snapshotStructure('chapter delete');
   const kind = chapterKind(chId);
   const name = chapterName(chId);
-  const index = book.chapterOrder.indexOf(chId);
   const text = chapterText(chId).trim();
   if (text) {
     const bodyEl = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
@@ -2902,6 +2909,14 @@ function wireChapterBody(body, chId) {
   body.addEventListener('paste', (e) => {
     // a script's lines keep their elements; a script pasted as text is read
     if (isScript() && spPaste(e, body, chId)) return;
+    // a picture on the clipboard (a screenshot, Copy Image) brings no words
+    const pic = !e.clipboardData.getData('text/plain').trim() && imageFromFile(e.clipboardData);
+    if (pic) {
+      e.preventDefault();
+      writeOverGhost();
+      insertImageFile(pic, null);
+      return;
+    }
     e.preventDefault();
     insertClip(e.clipboardData);
   });
@@ -2909,7 +2924,25 @@ function wireChapterBody(body, chId) {
   // way as a paste, instead of landing with its fonts, colours and links.
   // A drag within NEO's own pages is left to the engine.
   body.addEventListener('drop', (e) => {
-    if (dragFromInside || isScript() || !e.dataTransfer || (e.dataTransfer.files && e.dataTransfer.files.length)) return;
+    if (dragFromInside || isScript() || !e.dataTransfer) return;
+    // a picture dragged in from the Finder (or Explorer) lands on the page
+    const pic = e.dataTransfer.files && e.dataTransfer.files.length ? imageFromFile(e.dataTransfer) : null;
+    if (pic) {
+      e.preventDefault();
+      let from = null;
+      try { from = window.neo.pathForFile ? window.neo.pathForFile(pic) : null; } catch { /* no path */ }
+      const at = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      if (at && body.contains(at.startContainer)) {
+        body.focus({ preventScroll: true });
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(at);
+      }
+      writeOverGhost();
+      insertImageFile(pic, from);
+      return;
+    }
+    if (e.dataTransfer.files && e.dataTransfer.files.length) return;
     const types = [...(e.dataTransfer.types || [])];
     if (!types.includes('text/html') && !types.includes('text/plain')) return;
     e.preventDefault();
@@ -2924,8 +2957,16 @@ function wireChapterBody(body, chId) {
   });
   function insertClip(data) {
     writeOverGhost(); // pasted words over a gray note are prose, like typed ones
-    const html = data.getData('text/html');
+    let html = data.getData('text/html');
     const text = data.getData('text/plain');
+    // pictures embedded in the html are taken out whole: the words paste as
+    // words, and each picture lands as its own paragraph after them
+    let pics = [];
+    if (html) {
+      const picked = clipDataImages(html);
+      pics = picked.pics;
+      html = picked.html.trim() ? picked.html : '';
+    }
     // hyphens set as dialogue dashes, the same as typing them
     const edges = caretEdges(body);
     if (html) {
@@ -2955,6 +2996,7 @@ function wireChapterBody(body, chId) {
         } else document.execCommand('insertText', false, line);
       });
     }
+    if (pics.length) addDataImages(pics);
   }
   // While macOS composes input, shortcuts stand down completely.
   let composing = false;
@@ -3398,7 +3440,7 @@ function chapterStartBackspace(e, body, chId) {
   // …and on its first line. Below an empty line, Backspace takes the empty
   // line away and the paragraph moves up to the top of the chapter; it
   // never reaches past it into the chapter above.
-  let el = r.startContainer.nodeType === Node.TEXT_NODE ? r.startContainer.parentElement : r.startContainer;
+  const el = r.startContainer.nodeType === Node.TEXT_NODE ? r.startContainer.parentElement : r.startContainer;
   const block = el && el.closest ? el.closest('p') : null;
   if (block && body.contains(block) && block !== body.firstElementChild) {
     const above = block.previousElementSibling;
@@ -3544,7 +3586,7 @@ function flatPoint(p, off) {
 // whitespace repair, which duplicates a neighboring character. When that exact
 // hazard is about to happen, take the right-hand space along with the deletion,
 // leaving one clean space. All other deletes stay native.
-function spaceSafeDelete(e, body, chId) {
+function spaceSafeDelete(e, body, _chId) {
   if (e.key !== 'Backspace' && e.key !== 'Delete') return false;
   if (e.metaKey || e.ctrlKey || e.altKey) return false;
   const sel = window.getSelection();
@@ -4186,7 +4228,11 @@ function captureBody(body) {
   // (a page marks the lines that say who said it, and a chapter the speech
   // after a scene break, for the screen only)
   // (and a script's page breaks, (CONT'D) and suggestions)
-  return dropJunkSpans(body.innerHTML).replace(/<(b|i|em|strong|u|s|strike|sub|sup)\s+style="[^"]*"/g, '<$1').replace(/<p\b[^>]*>/g, (tag) => tag.replace(/ data-(?:attr|speech|first|walk|fnopen)=""/g, '')
+  // (a picture's data URL is the page's, not the file's: the names in
+  // data-img are what's saved, and the next open reads the picture in)
+  return dropJunkSpans(body.innerHTML)
+    .replace(/<img\b[^>]*>/g, (tag) => (tag.includes('data-img=') ? tag.replace(/\s+src="data:[^"]*"/, '') : tag))
+    .replace(/<(b|i|em|strong|u|s|strike|sub|sup)\s+style="[^"]*"/g, '<$1').replace(/<p\b[^>]*>/g, (tag) => tag.replace(/ data-(?:attr|speech|first|walk|fnopen)=""/g, '')
     .replace(/ data-(?:pg|fill|contd|ghost|ghost-empty|sp-paste|scene-note)(?:="[^"]*")?/g, ''));
 }
 
@@ -4206,6 +4252,279 @@ function dropJunkSpans(html) {
     junk.push(drop);
     return drop ? '' : tag;
   });
+}
+
+/* ==================================================================
+   IMAGES — a picture on the page                                    */
+/* ==================================================================
+   A picture pasted from the clipboard or dragged in from the Finder
+   is its own paragraph. Its bytes live in the book's img/ folder: the
+   original at full resolution (what the exports print) and a lighter
+   copy the page shows, made here with the canvas and sent over already
+   encoded. The chapter's html keeps only the names (data-img, data-d);
+   the data URL that displays the picture belongs to the page and never
+   reaches the file — captureBody takes it back out, and the next open
+   reads the picture in again. SVG needs no lighter copy: it scales. */
+const IMG_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+const IMG_DATA_SRC = /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/i;
+
+// the first picture in a clipboard or a drop (a drop of many takes its first)
+function imageFromFile(dt) {
+  for (const f of dt.files || []) {
+    if (String(f.type || '').slice(0, 6) === 'image/' || /\.(png|jpe?g|webp|svg)$/i.test(f.name || '')) return f;
+  }
+  return null;
+}
+function imageExtOf(file, srcPath) {
+  const fromPath = (srcPath || (file && file.name) || '').match(/\.([a-z0-9]+)$/i);
+  const ext = fromPath ? fromPath[1].toLowerCase() : IMG_TYPES[file && file.type] || '';
+  return ext === 'jpeg' ? 'jpg' : ext;
+}
+const readAsDataURL = (blob) => new Promise((resolve) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result || ''));
+  r.onerror = () => resolve('');
+  r.readAsDataURL(blob);
+});
+// the page's copy: no wider than the page (twice over, so a retina screen
+// and the zoom keep their sharpness), re-encoded small as WebP
+function imageDisplayCopy(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const im = new Image();
+    const done = (b) => { URL.revokeObjectURL(url); resolve(b); };
+    im.onload = () => {
+      try {
+        const paper = $('#paper');
+        const pw = paper ? parseFloat(getComputedStyle(paper).width) : 0;
+        const cap = Math.max(1200, Math.round((pw || 600) * 2));
+        const w = Math.min(im.naturalWidth || cap, cap);
+        const h = im.naturalWidth ? Math.max(1, Math.round(im.naturalHeight * (w / im.naturalWidth))) : cap;
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(im, 0, 0, w, h);
+        cv.toBlob((b) => done(b || null), 'image/webp', 0.85);
+      } catch { done(null); }
+    };
+    im.onerror = () => done(null);
+    im.src = url;
+  });
+}
+// the picture lands at the caret as its own paragraph; the original goes
+// to img/ by name (from disk, when the file was dragged in — its bytes
+// are copied as they are) and the page's copy is set as the src at once
+async function insertImageFile(file, srcPath) {
+  if (!window.neo.imgStore) { toast(t('Pictures aren’t supported here yet.')); return; }
+  const ext = imageExtOf(file, srcPath);
+  if (!ext) { toast(t('Couldn’t add that image.')); return; }
+  const original = srcPath ? '' : await readAsDataURL(file);
+  let display = '';
+  if (ext !== 'svg') {
+    const copy = await imageDisplayCopy(file);
+    if (copy) display = await readAsDataURL(copy);
+  }
+  const show = display || original || await readAsDataURL(file);
+  let r = null;
+  try {
+    r = await window.neo.imgStore(book.id, {
+      srcPath: srcPath || undefined,
+      ext,
+      original: original ? original.split(',')[1] : undefined,
+      display: display ? display.split(',')[1] : undefined
+    });
+  } catch { r = null; }
+  if (!r || r.error || !r.file || !show) { toast(t('Couldn’t add that image.')); return; }
+  if (!placeImageParagraph(`<img data-img="${r.file}"${r.display ? ` data-d="${r.display}"` : ''} src="${show}" alt="">`)) {
+    toast(t('Couldn’t add that image.'));
+  }
+}
+// Format → Insert Image…: the caret must already stand in the page, so the
+// picture lands where the writer is
+async function insertImageFromMenu() {
+  if (!book || isScript()) return;
+  if (!window.neo.imgPick || !window.neo.imgStore) { toast(t('Pictures aren’t supported here yet.')); return; }
+  const sel = window.getSelection();
+  let n = sel && sel.rangeCount ? sel.getRangeAt(0).startContainer : null;
+  if (n && n.nodeType === Node.TEXT_NODE) n = n.parentElement;
+  if (!n || !n.closest || !n.closest('.chapter-body')) { toast(t('Click in the page first, then insert a picture.')); return; }
+  let pick = null;
+  try { pick = await window.neo.imgPick(); } catch { pick = null; }
+  if (!pick || !pick.base64) return;
+  const bytes = Uint8Array.from(atob(pick.base64), (c) => c.charCodeAt(0));
+  await insertImageFile(new File([bytes], 'picture', { type: pick.mime }), pick.srcPath);
+}
+// pictures embedded in pasted html (a page copied from the web): taken out
+// whole, so the words pasted as words and each picture becomes its own
+// paragraph after them
+function clipDataImages(html) {
+  const side = new DOMParser().parseFromString(html, 'text/html');
+  const pics = [];
+  for (const im of side.querySelectorAll('img')) {
+    const src = im.getAttribute('src') || '';
+    if (!IMG_DATA_SRC.test(src)) continue;
+    const type = src.slice(5, src.indexOf(';')).toLowerCase();
+    if (IMG_TYPES[type]) pics.push({ url: src, mime: IMG_TYPES[type] === 'svg' ? 'image/svg+xml' : type });
+    im.remove();
+  }
+  return { pics, html: side.body.innerHTML };
+}
+async function addDataImages(pics) {
+  for (const pic of pics) {
+    try {
+      const blob = await (await fetch(pic.url)).blob();
+      await insertImageFile(blob, null);
+    } catch { toast(t('Couldn’t add that image.')); }
+  }
+}
+// the picture lands as its own paragraph at the caret, and the caret moves
+// to a fresh paragraph after it, so typing goes on. (A direct placement,
+// not execCommand: the engine merges an inserted <p> into the paragraph
+// the caret stands in, and the picture would lose its own line.)
+function placeImageParagraph(imgHtml) {
+  const sel = window.getSelection();
+  let body = null;
+  let p = null;
+  if (sel && sel.rangeCount) {
+    let n = sel.getRangeAt(0).startContainer;
+    if (n.nodeType === Node.TEXT_NODE) n = n.parentElement;
+    if (n && n.closest) { body = n.closest('.chapter-body'); p = n.closest('p'); }
+  }
+  if (!body) return false;
+  const pic = document.createElement('p');
+  pic.className = 'image';
+  pic.innerHTML = imgHtml;
+  if (p && p.parentElement === body) p.after(pic);
+  else body.appendChild(pic);
+  const next = document.createElement('p');
+  next.innerHTML = '<br>';
+  pic.after(next);
+  const r = document.createRange();
+  r.setStart(next, 0);
+  r.setEnd(next, 0);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  body.dispatchEvent(new Event('input', { bubbles: true })); // the engine saves what changed
+  return true;
+}
+// a picture the chapter names, read back for the page: the lighter copy
+// when there is one, else the original. The read is remembered, so a
+// chapter opened again (and the exports) don't ask for it twice.
+const imgReadCache = new Map();
+function imgReadNamed(bookId, fname) {
+  const key = bookId + '/' + fname;
+  let p = imgReadCache.get(key);
+  if (!p) {
+    p = window.neo.imgRead(bookId, fname);
+    imgReadCache.set(key, p);
+    p.catch(() => { if (imgReadCache.get(key) === p) imgReadCache.delete(key); });
+  }
+  return p;
+}
+const imgDataUrl = (data) => (data && data.base64 ? `data:${data.mime};base64,${data.base64}` : '');
+// the read waits until the picture is near the viewport (a book can hold
+// many); one observer serves every open chapter and the snapshot view
+let imgObserver = null;
+function imgShow(im, bookId) {
+  const fname = im.dataset.d || im.dataset.img;
+  if (!fname) return;
+  imgReadNamed(bookId, fname).then((data) => {
+    const url = imgDataUrl(data);
+    if (url && im.isConnected) im.src = url;
+    else if (!url && im.isConnected) im.classList.add('img-missing');
+  }).catch(() => { if (im.isConnected) im.classList.add('img-missing'); });
+}
+function resolveBodyImages(body) {
+  if (!window.neo.imgRead || !body) return;
+  for (const im of body.querySelectorAll('img[data-img]:not([src])')) {
+    if (!im.dataset.img) continue;
+    if (typeof IntersectionObserver !== 'function') { imgShow(im, book.id); continue; }
+    if (!imgObserver) {
+      imgObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          imgObserver.unobserve(e.target);
+          imgShow(e.target, book.id);
+        }
+      }, { rootMargin: '600px 0px' });
+    }
+    imgObserver.observe(im);
+  }
+}
+// the exports print the original: full resolution, straight from img/
+async function resolveExportImages(d) {
+  if (!window.neo.imgRead || !d || !d.sections) return d;
+  const wanted = new Set();
+  for (const sec of d.sections) {
+    for (const p of sec.paras || []) {
+      if (p.html && p.html.indexOf('data-img=') >= 0) {
+        for (const m of p.html.matchAll(/data-img="([^"]+)"/g)) { wanted.add(m[1]); }
+      }
+    }
+  }
+  if (!wanted.size) return d;
+  const urls = new Map();
+  await Promise.all([...wanted].map((f) => imgReadNamed(d.id, f).then((data) => {
+    const url = imgDataUrl(data);
+    if (url) urls.set(f, url);
+  }).catch(() => {})));
+  for (const sec of d.sections) {
+    for (const p of sec.paras || []) {
+      if (p.html && p.html.indexOf('data-img=') >= 0) {
+        p.html = p.html.replace(/<img\b[^>]*>/g, (tag) => {
+          const f = /data-img="([^"]+)"/.exec(tag);
+          const url = f && urls.get(f[1]);
+          return url ? tag.replace('<img', '<img src="' + url + '"') : tag;
+        });
+      }
+    }
+  }
+  return d;
+}
+// what a Word export needs of each picture: its bytes and its size. An SVG
+// is rasterised to PNG there (every Word reads one), and unknown sizes get
+// a reader's shape rather than a broken one.
+async function imageExportPart(file, url) {
+  const head = url.slice(0, url.indexOf(',') + 1);
+  let ext = head.startsWith('data:image/svg+xml') ? 'svg' : head.startsWith('data:image/png') ? 'png' : head.startsWith('data:image/webp') ? 'webp' : 'jpg';
+  let w = 0;
+  let h = 0;
+  const im = new Image();
+  im.src = url;
+  try { await im.decode(); w = im.naturalWidth; h = im.naturalHeight; } catch { /* sized below */ }
+  if (ext === 'svg') {
+    w = w || 600;
+    h = h || Math.round(w * 3 / 4);
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    cv.getContext('2d').drawImage(im, 0, 0, w, h);
+    url = cv.toDataURL('image/png');
+    ext = 'png';
+  }
+  if (!w) { w = 600; h = h || 450; }
+  return { file, base64: url.slice(url.indexOf(',') + 1), ext, w, h };
+}
+// every picture the sections name, sized and ready for Word (each part
+// lands on its paragraph as p.imgParts, in order)
+async function exportImgParts(d) {
+  const parts = new Map();
+  for (const sec of d.sections || []) {
+    for (const p of sec.paras || []) {
+      if (!p.html || p.html.indexOf('data-img=') < 0) continue;
+      const list = [];
+      for (const tag of p.html.matchAll(/<img\b[^>]*>/g)) {
+        const file = /data-img="([^"]+)"/.exec(tag[0]);
+        const src = /src="([^"]+)"/.exec(tag[0]);
+        if (!file) continue;
+        let part = parts.get(file[1]);
+        if (part === undefined) {
+          part = await imageExportPart(file[1], src ? src[1] : '').catch(() => null);
+          parts.set(file[1], part);
+        }
+        if (part) list.push(part);
+      }
+      if (list.length) p.imgParts = list;
+    }
+  }
 }
 
 // A chapter that opens on a line of dialogue sets no drop cap: the dash
@@ -4629,9 +4948,9 @@ function autoCapKey(e, body) {
   const lang = writingLanguage();
   // a lowercase letter where a sentence starts
   if (e.key !== e.key.toLocaleUpperCase(lang) && /\p{L}/u.test(e.key)) {
-    let starts = /^[\s"'“‘„«»(\[¿¡—–-]*$/.test(before);
-    if (!starts && /(?<!\.)\.\s+["'“‘„«(\[]?$/.test(before)) {
-      const word = (before.replace(/\.\s+["'“‘„«(\[]?$/, '.').match(/([\p{L}.]+)\.$/u) || [])[1] || '';
+    let starts = /^[\s"'“‘„«»([¿¡—–-]*$/.test(before);
+    if (!starts && /(?<!\.)\.\s+["'“‘„«([]?$/.test(before)) {
+      const word = (before.replace(/\.\s+["'“‘„«([]?$/, '.').match(/([\p{L}.]+)\.$/u) || [])[1] || '';
       starts = !CAPS_ABBREV.has(word.toLowerCase()) && !/^\p{L}$/u.test(word);
     }
     if (!starts) return;
@@ -4728,7 +5047,7 @@ function smartKeys(e, body) {
 
 // Is a quotation open at the caret, in the paragraph so far?
 function quoteIsOpen(range, q, straight) {
-  let el = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer;
+  const el = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer;
   const block = el && el.closest ? el.closest('p, div') : null;
   if (!block) return false;
   const pre = document.createRange();
@@ -5035,7 +5354,7 @@ document.addEventListener('keydown', (e) => {
   // editor check: on the shelf the same keys size the covers (#364).
   if (isLargerTextShortcut(e) || isSmallerTextShortcut(e)) {
     e.preventDefault();
-    void setEditorFontSize(isLargerTextShortcut(e) ? 1 : -1);
+    setEditorFontSize(isLargerTextShortcut(e) ? 1 : -1);
     return;
   }
   if ($('#editor-view').hidden) return;
@@ -5193,6 +5512,7 @@ function vimWord(key) {
   let n = 0;
   if (key === 'w') {
     const start = vimClass(chars[0]);
+    // eslint-disable-next-line no-unmodified-loop-condition -- the class is taken once, on purpose
     while (n < chars.length && start && vimClass(chars[n]) === start) n++;
     while (n < chars.length && vimClass(chars[n]) === 0) n++;
     if (n >= chars.length) { vimMove('forward', 'paragraphboundary'); vimMove('forward', 'character'); return; }
@@ -5206,6 +5526,7 @@ function vimWord(key) {
     chars.reverse();
     while (n < chars.length && vimClass(chars[n]) === 0) n++;
     const cls = vimClass(chars[n]);
+    // eslint-disable-next-line no-unmodified-loop-condition -- the class is taken once, on purpose
     while (n < chars.length && cls && vimClass(chars[n]) === cls) n++;
     if (!chars.length) { vimMove('backward', 'character'); vimMove('backward', 'paragraphboundary'); return; }
   }
@@ -5997,6 +6318,7 @@ function spFromFdx(xml) {
 function spToFdx(lines, title = {}) {
   const NAMES = { heading: 'Scene Heading', action: 'Action', character: 'Character', paren: 'Parenthetical', dialogue: 'Dialogue', transition: 'Transition', shot: 'Shot' };
   const CAPS = ['heading', 'character', 'transition', 'shot'];
+  // eslint-disable-next-line no-control-regex -- the characters XML can't carry, stripped on purpose
   const esc = (s) => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const textEl = (r, caps) => {
     const style = [r.b && 'Bold', r.i && 'Italic', r.u && 'Underline', r.s && 'Strikeout'].filter(Boolean).join('+');
@@ -7559,7 +7881,7 @@ function reconcileMarks() {
   const seen = new Set();
   let changed = false;
   for (const m of document.querySelectorAll('.chapter-body .ph-mark')) {
-    let sid = m.dataset.sid;
+    const sid = m.dataset.sid;
     if (!sid) continue;
     const chEl = m.closest('.chapter');
     const chId = chEl ? chEl.dataset.id : null;
@@ -12893,6 +13215,7 @@ async function showSnapshot(name) {
     body.className = 'chapter-body snap-body';
     if (isScript()) body.classList.add('sp-geom');
     body.appendChild(snapHolderEl(ch.html));
+    resolveBodyImages(body); // a snapshot shows its pictures too
     sec.appendChild(body);
     v.appendChild(sec);
     if (ch.same) continue;
@@ -14415,10 +14738,10 @@ function capitalSlips(el) {
       } catch { /* changed underneath us */ }
     };
     // the paragraph's first letter, past opening quotes, brackets and dashes
-    const lead = text.match(/^[\s"'“‘„«»(\[¿¡—–-]*/)[0].length;
+    const lead = text.match(/^[\s"'“‘„«»([¿¡—–-]*/)[0].length;
     if (/\p{Ll}/u.test(text[lead] || '') && !/^\p{Ll}\./u.test(text.slice(lead, lead + 2))) mark(lead);
     // a letter after a full stop (not an ellipsis or an abbreviation)
-    const stop = /(?<!\.)\.\s+["'“‘„«(\[]?(\p{Ll})/gu;
+    const stop = /(?<!\.)\.\s+["'“‘„«([]?(\p{Ll})/gu;
     let m;
     while ((m = stop.exec(text))) {
       const before = text.slice(0, m.index).match(/([\p{L}.]+)$/u);
@@ -15615,7 +15938,11 @@ function parasFromHtml(html) {
     const flush = !poetry && p.classList.contains('flush');
     const align = (p.style && p.style.textAlign) || '';
     const runs = paraRuns(p.innerHTML, true).filter((r) => r.text || r.fn !== undefined);
-    const inner = runs.map((r) => runHtml(r)).join('');
+    // a picture travels by name; the exports read its bytes back (the
+    // paperback and the PDF print the original, at full resolution)
+    const imgs = [...p.querySelectorAll('img[data-img]')].map((im) =>
+      `<img data-img="${escAttr(im.dataset.img || '')}"${im.dataset.d ? ` data-d="${escAttr(im.dataset.d)}"` : ''}>`).join('');
+    const inner = runs.map((r) => runHtml(r)).join('') + imgs;
     p.querySelectorAll('.fn').forEach((f) => f.remove());
     return {
       sceneBreak,
@@ -15624,9 +15951,10 @@ function parasFromHtml(html) {
       text: (healStrayNbsp(p), p.innerText).trim(),
       runs,
       align,
+      hasImg: !!imgs,
       html: `<p${poetry ? ' class="poetry"' : flush ? ' class="flush"' : ''}${align ? ` style="text-align:${align}"` : ''}>${inner}</p>`
     };
-  }).filter((p) => p.sceneBreak || p.text);
+  }).filter((p) => p.sceneBreak || p.text || p.hasImg);
 }
 
 // The book's entries as the builders lay them out. Chapters, a prologue and
@@ -16138,6 +16466,7 @@ p.brk { text-align: center; margin: 0.7em 0; break-after: avoid; letter-spacing:
 p.poetry { margin: 0.5em 1.5em; text-align: left; }
 p.poetry + p.poetry { margin-top: 0; }
 .backpage p.hy { text-indent: 0; margin-bottom: 0.7em; }
+img[data-img] { max-width: 100%; height: auto; display: block; margin: 0.4em auto; }
 .also p { text-align: center; font-style: italic; margin: 0 0 0.45em; }
 .note .reach-hd { margin-top: 1.4em; text-align: center; letter-spacing: 0.18em; text-transform: uppercase; font-size: 0.85em; }
 .note .reach { text-align: center; margin-top: 0.35em; }
@@ -16281,6 +16610,7 @@ async function printPaperback() {
     renderChapters();
   }
   const d = bookExportData();
+  await resolveExportImages(d); // the pictures print from their originals
   opts.alsoBy = opts.alsoByText ? opts.alsoByText.split('\n') : [];
   opts.reviewWords = opts.reviewText || reviewDefault;
   const words = d.sections.reduce((n, s) => n + s.paras.reduce((m, p) => m + countWords(p.text || ''), 0), 0);
@@ -16351,7 +16681,7 @@ function buildTxt(data) {
 function buildMd(data) {
   const d = data || bookExportData();
   // a title like "Wool *Omnibus*" must not turn into markup (idea: nejcc, #70)
-  const mdMeta = (s) => String(s || '').replace(/([\\`*_\[\]#<>])/g, '\\$1');
+  const mdMeta = (s) => String(s || '').replace(/([\\`*_[\]#<>])/g, '\\$1');
   // wrap a run in emphasis markers, keeping boundary spaces outside them
   // Markdown has strikethrough; underline goes as HTML, which it allows
   const mdMarks = [{ key: 'b', open: '**', close: '**' }, { key: 'i', open: '*', close: '*' },
@@ -16549,6 +16879,7 @@ function buildHtml(data, opts = {}) {
   /* set like a printed book: justified, hyphenated in the book's language,
      no line left alone at the top or foot of a page */
   .chapter p { text-indent: 2em; margin: 0; text-align: justify; hyphens: auto; -webkit-hyphens: auto; widows: 2; orphans: 2; }
+  img[data-img] { max-width: 100%; height: auto; display: block; margin: 0.4em auto; }
   .chapter p.poetry { text-align: left; hyphens: manual; -webkit-hyphens: manual; }
   .chapter .hd + p, .chapter .byline + p, .chapter .brk + p, .brk + p, .chapter p.first { text-indent: 0; }
   .chapter p.dialogue { text-indent: 2em; }
@@ -16628,6 +16959,7 @@ ${opts.stamp ? `<p class="prov">${t('{n} words · exported from NEO on {date}', 
 // (characters XML 1.0 forbids, pasted in from a PDF or a terminal, come
 // out: one of them makes a whole EPUB or Word file unreadable)
 const escXml = (s) => String(s)
+  // eslint-disable-next-line no-control-regex -- the characters XML forbids, stripped on purpose
   .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -16912,7 +17244,9 @@ function docxP(runs, opts = {}) {
   if (opts.poetry) pPr.push('<w:ind w:left="720" w:right="720"/>');
   else if (opts.indentLeft) pPr.push(`<w:ind w:left="${opts.indentLeft}"/>`);
   else if (opts.indent) pPr.push('<w:ind w:firstLine="480"/>');
-  if (opts.align) pPr.push(`<w:jc w:val="${opts.align}"/>`);
+  // a paragraph of nothing but a picture stands centered, like the page's
+  if (opts.imgs && !runs.some((r) => r.text)) pPr.push('<w:jc w:val="center"/>');
+  else if (opts.align) pPr.push(`<w:jc w:val="${opts.align}"/>`);
   const rXml = runs.map((r) => {
     if (r.br) return '<w:r><w:br/></w:r>';
     if (r.fn !== undefined) {
@@ -16935,12 +17269,39 @@ function docxP(runs, opts = {}) {
       + (r.u ? '<w:u w:val="single"/>' : '');
     return `<w:r>${rPr ? '<w:rPr>' + rPr + '</w:rPr>' : ''}<w:t xml:space="preserve">${escXml(r.text)}</w:t></w:r>`;
   }).join('');
-  return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${rXml}</w:p>`;
+  // the paragraph's pictures, after its words
+  const drawings = opts.imgs ? opts.imgs.map((im) => docxDrawingOf(im)).join('') : '';
+  return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${rXml}${drawings}</w:p>`;
 }
 
-function buildDocxEntries(data) {
+async function buildDocxEntries(data) {
   docxNotes = [];
-  try { return docxEntriesOf(data); } finally { docxNotes = null; }
+  docxMedia = [];
+  docxPrId = 1;
+  try {
+    const d = data || bookExportData();
+    await resolveExportImages(d); // the pictures travel from their originals
+    await exportImgParts(d);
+    return docxEntriesOf(d);
+  } finally {
+    docxNotes = null;
+  }
+}
+// the pictures a Word export embeds: media files, their relationships, and
+// the drawing that sizes each on its page (in EMU; the text width of a
+// Letter or A4 page with one-inch margins)
+let docxMedia = [];
+let docxPrId = 1;
+function docxDrawingOf(part) {
+  const n = docxMedia.length + 1;
+  const media = { rid: 'rIdImg' + n, file: 'image' + n + '.' + part.ext, base64: part.base64 };
+  docxMedia.push(media);
+  const maxW = ((window.neo.paper || 'Letter') === 'A4' ? 9026 : 9360) * 635;
+  let cx = part.w * 9525;
+  let cy = part.h * 9525;
+  if (cx > maxW) { cy = Math.round(cy * maxW / cx); cx = maxW; }
+  const id = docxPrId++;
+  return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${id}" name="Picture ${id}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${id}" name="${media.file}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="${media.rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 }
 // Word's footnotes part: the two separators Word expects, then the notes
 function docxFootnotesXml(notes) {
@@ -17009,14 +17370,14 @@ function docxEntriesOf(data) {
     // right-set line adds its alignment on top
     for (const p of ch.paras) {
       if (p.sceneBreak) body.push(docxP([{ text: '***' }], { style: 'SceneBreak' }));
-      else if (p.poetry) body.push(docxP(paraRuns(p.html), { style: 'Poetry', align: p.align === 'center' || p.align === 'right' ? p.align : '' }));
-      else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { style: 'BodyTextNoIndent', align: p.align }));
-      else body.push(docxP(paraRuns(p.html), { style: p.flush ? 'BodyTextNoIndent' : 'BodyText' }));
+      else if (p.poetry) body.push(docxP(paraRuns(p.html), { style: 'Poetry', align: p.align === 'center' || p.align === 'right' ? p.align : '', imgs: p.imgParts }));
+      else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { style: 'BodyTextNoIndent', align: p.align, imgs: p.imgParts }));
+      else body.push(docxP(paraRuns(p.html), { style: p.flush ? 'BodyTextNoIndent' : 'BodyText', imgs: p.imgParts }));
     }
   });
   if (!placed) contents();
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"${docxMedia.length ? ' xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"' : ''}><w:body>${body.join('')}
 <w:sectPr>${(window.neo.paper || 'Letter') === 'A4' ? '<w:pgSz w:w="11906" w:h="16838"/>' : '<w:pgSz w:w="12240" w:h="15840"/>'}<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
 </w:body></w:document>`;
   // the page's own typeface (on Linux, the bundled face it shows)
@@ -17045,11 +17406,16 @@ ${para('FootnoteText', 'footnote text', '<w:spacing w:after="0" w:line="240" w:l
 ${chr('FootnoteReference', 'footnote reference', '<w:vertAlign w:val="superscript"/>')}
 </w:styles>`;
   const notes = docxNotes.length ? docxNotes : null;
+  // the pictures' parts: one content type and relationship each
+  const imgDefaults = [...new Set(docxMedia.map((m) => m.file.split('.').pop()))]
+    .map((ext) => `<Default Extension="${ext}" ContentType="${ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'}"/>`).join('');
+  const imgRels = docxMedia.map((m) =>
+    `<Relationship Id="${m.rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${m.file}"/>`).join('');
   return [
     { path: '[Content_Types].xml', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="xml" ContentType="application/xml"/>${imgDefaults}
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>${notes ? `
 <Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>` : ''}
@@ -17061,10 +17427,11 @@ ${chr('FootnoteReference', 'footnote reference', '<w:vertAlign w:val="superscrip
     { path: 'word/_rels/document.xml.rels', content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${notes ? `
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>` : ''}
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>` : ''}${imgRels}
 </Relationships>` },
     { path: 'word/document.xml', content: documentXml },
     { path: 'word/styles.xml', content: stylesXml },
+    ...docxMedia.map((m) => ({ path: 'word/media/' + m.file, content: m.base64, base64: true })),
     ...(notes ? [{ path: 'word/footnotes.xml', content: docxFootnotesXml(notes) }] : [])
   ];
 }
@@ -17090,25 +17457,37 @@ const EPUB_TYPES = {
   opener: 'volume', acknowledgments: 'acknowledgments', about: 'backmatter'
 };
 
-function chapterXhtml(ch, d) {
+function chapterXhtml(ch, d, imgs) {
   const kind = ch.kind || 'chapter';
   // footnotes: the number is a link a reading app opens as a pop-up note
   let fnN = fnBefore(d, ch);
   const notes = [];
-  const xhtmlRuns = (p) => paraRuns(p.html).map((r) => {
-    if (r.br) return '<br/>';
-    if (r.fn !== undefined) {
-      notes.push(r.fn);
-      fnN += 1;
-      return `<sup class="fnref"><a epub:type="noteref" href="#fn${fnN}" id="fnr${fnN}">${fnN}</a></sup>`;
+  const xhtmlRuns = (p) => {
+    const out = paraRuns(p.html).map((r) => {
+      if (r.br) return '<br/>';
+      if (r.fn !== undefined) {
+        notes.push(r.fn);
+        fnN += 1;
+        return `<sup class="fnref"><a epub:type="noteref" href="#fn${fnN}" id="fnr${fnN}">${fnN}</a></sup>`;
+      }
+      let t = escXml(r.text);
+      if (r.s) t = '<s>' + t + '</s>';
+      if (r.u) t = '<u>' + t + '</u>';
+      if (r.i) t = '<em>' + t + '</em>';
+      if (r.b) t = '<strong>' + t + '</strong>';
+      return t;
+    }).join('');
+    // the paragraph's pictures, after its words: XHTML wants them closed,
+    // and the src is the manifest's file, not a data URL
+    if (imgs && p.html && p.html.indexOf('data-img=') >= 0) {
+      return out + [...p.html.matchAll(/<img\b[^>]*>/g)].map((m) => {
+        const f = /data-img="([^"]+)"/.exec(m[0]);
+        const e = f && imgs.get(f[1]);
+        return e ? `<img src="${e.href}" alt=""/>` : '';
+      }).join('');
     }
-    let t = escXml(r.text);
-    if (r.s) t = '<s>' + t + '</s>';
-    if (r.u) t = '<u>' + t + '</u>';
-    if (r.i) t = '<em>' + t + '</em>';
-    if (r.b) t = '<strong>' + t + '</strong>';
-    return t;
-  }).join('');
+    return out;
+  };
   // a page's lines, each set on its own
   const lines = () => ch.paras.map((p) => {
     if (p.sceneBreak) return '<p class="brk">* * *</p>';
@@ -17166,6 +17545,23 @@ ${paras}
 
 async function buildEpubEntries(data) {
   const d = data || bookExportData();
+  await resolveExportImages(d); // the pictures travel from their originals
+  // the pictures the sections name, each a manifest file of its own (an
+  // SVG stays an SVG: EPUB 3 reads one natively)
+  const imgs = new Map();
+  for (const sec of d.sections || []) {
+    for (const p of sec.paras || []) {
+      if (!p.html || p.html.indexOf('data-img=') < 0) continue;
+      for (const tag of p.html.matchAll(/<img\b[^>]*>/g)) {
+        const file = /data-img="([^"]+)"/.exec(tag[0]);
+        const src = /src="([^"]+)"/.exec(tag[0]);
+        if (!file || !src || imgs.has(file[1])) continue;
+        const mime = (src[1].slice(5).split(';')[0] || 'image/png').toLowerCase();
+        const ext = mime === 'image/svg+xml' ? 'svg' : mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+        imgs.set(file[1], { id: 'img' + (imgs.size + 1), href: 'images/img' + (imgs.size + 1) + '.' + ext, mime, base64: src[1].slice(src[1].indexOf(',') + 1) });
+      }
+    }
+  }
   const chapters = d.sections;
   const uuid = 'urn:uuid:' + (d.uuid || crypto.randomUUID());
   const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
@@ -17222,6 +17618,7 @@ ${navList(n.children)}
 <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
 <item id="css" href="style.css" media-type="text/css"/>
 ${chItems}
+${[...imgs.values()].map((e) => `<item id="${e.id}" href="${e.href}" media-type="${e.mime}"/>`).join('\n')}
 </manifest>
 <spine toc="ncx">
 <itemref idref="cover" linear="no"/>
@@ -17258,6 +17655,7 @@ ${navList(toc)}
 <navPoint id="titlepage" playOrder="1"><navLabel><text>${escXml(t('Title Page'))}</text></navLabel><content src="title.xhtml"/></navPoint>${ncxPoints(toc)}
 </navMap></ncx>` },
     { path: 'OEBPS/style.css', content: `body { font-family: serif; line-height: 1.5; margin: 1em; }
+img { max-width: 100%; }
 sup.fnref { font-size: 0.7em; line-height: 0; vertical-align: super; }
 sup.fnref a, .footnote a { text-decoration: none; }
 .notes { margin-top: 2.5em; border-top: 1px solid #999; padding-top: 0.5em; font-size: 0.85em; }
@@ -17310,10 +17708,11 @@ nav#toc ol ol { padding-left: 1.5em; }
 <body><div class="titlepage"><h2>${escXml(d.title)}</h2>
 ${d.subtitle ? `<p class="sub">${escXml(d.subtitle)}</p>` : ''}
 <p class="auth">${escXml(d.author)}</p></div></body></html>` },
-    { path: 'OEBPS/' + coverName, content: coverContent, base64: true }
+    { path: 'OEBPS/' + coverName, content: coverContent, base64: true },
+    ...[...imgs.values()].map((e) => ({ path: 'OEBPS/' + e.href, content: e.base64, base64: true }))
   ];
   for (const ch of chapters) {
-    entries.push({ path: `OEBPS/ch${ch.num}.xhtml`, content: chapterXhtml(ch, d) });
+    entries.push({ path: `OEBPS/ch${ch.num}.xhtml`, content: chapterXhtml(ch, d, imgs) });
   }
   return entries;
 }
@@ -17633,12 +18032,13 @@ async function doExport(format, chId = null) {
   const defaultName = safeName(book.title) + (one ? '-' + safeName(one.chapterOnly) : '');
   try {
     let payload;
-    if (format === 'docx') payload = { format, defaultName, zipEntries: buildDocxEntries(data) };
+    if (format === 'docx') payload = { format, defaultName, zipEntries: await buildDocxEntries(data) };
     else if (format === 'epub') payload = { format, defaultName, zipEntries: await buildEpubEntries(data) };
     else if (format === 'txt') payload = { format, defaultName, content: buildTxt(data) };
     else if (format === 'md') payload = { format, defaultName, content: buildMd(data) };
     else {
       const d = data || bookExportData();
+      await resolveExportImages(d); // the pictures print from their originals
       payload = { format, defaultName, content: buildHtml(d, { cover: one ? null : await exportCover(d), fonts: await exportFontFaces(d) }) };
     }
     const saved = await window.neo.exportSave(payload);
@@ -17919,6 +18319,7 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'snapshot' && book && !$('#editor-view').hidden) snapshotNow();
   if (msg.type === 'emailSettings') emailSettings();
   if (msg.type === 'find') openSearch();
+  if (msg.type === 'insert-image') insertImageFromMenu();
   if (msg.type === 'spellcheck') toggleSpellcheck();
   if (msg.type === 'spellLanguage') changeSpellLanguage(msg.value);
   if (msg.type === 'reshelve') reshelveBook();

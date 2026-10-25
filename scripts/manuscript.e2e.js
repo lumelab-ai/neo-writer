@@ -25,6 +25,10 @@ for (const name of fs.readdirSync(os.tmpdir())) {
 }
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `neo-manuscript-test-${process.pid}-`));
 app.setPath('userData', path.join(tmp, 'app'));
+// the words the test reads are on the screen: English whatever language
+// the computer running the test happens to speak
+fs.mkdirSync(path.join(tmp, 'app'), { recursive: true });
+fs.writeFileSync(path.join(tmp, 'app', 'settings.json'), JSON.stringify({ uiLanguage: 'en' }));
 app.setPath('documents', tmp);
 const LIB = path.join(tmp, 'NEO Library');
 fs.mkdirSync(LIB);
